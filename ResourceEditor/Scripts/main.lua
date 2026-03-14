@@ -5,10 +5,23 @@
 
 local function log(s) print("[ResourceEditor] " .. s .. "\n") end
 
+-- Write to both UE4SS.log and the in-game console output device.
+local function out(ar, s)
+    log(s)
+    pcall(function() ar:Log(s) end)
+end
+
 local function safeGet(fn)
     local ok, v = pcall(fn)
     return ok and v or nil
 end
+
+-- Known resource name keys passed to GetResourceAmount / SetResourceAmount.
+-- GetResourceNames() returns TArray<FString> which crashes UE4SS Lua — use hardcoded list.
+local RESOURCES = {
+    "Food", "Deuterium", "Energy", "Morale", "MaxMorale",
+    "Happiness", "LivingSpace", "Resilience",
+}
 
 -- ── Find resource manager ──────────────────────────────────────────────────────
 
@@ -16,103 +29,85 @@ local function findResourceManager()
     local managers = FindAllOf("STVResourceManager")
     if not managers then return nil end
     for _, m in ipairs(managers) do
-        if safeGet(function() return m:IsValid() end) then
-            return m
-        end
+        if safeGet(function() return m:IsValid() end) then return m end
     end
     return nil
 end
 
--- ── Resource name discovery ────────────────────────────────────────────────────
--- GetResourceNames() is a static BlueprintCallable on USTVResourceManager.
--- Falls back to a known list if the call fails.
+-- ── Read a resource amount safely ──────────────────────────────────────────────
 
-local FALLBACK_RESOURCES = {
-    "Food", "Deuterium", "Energy", "Morale", "MaxMorale",
-    "Happiness", "LivingSpace", "Resilience",
-}
-
-local function getResourceNames(rm)
-    local names = safeGet(function() return rm:GetResourceNames() end)
-    if names and #names > 0 then
-        local t = {}
-        for i = 1, #names do t[i] = names[i] end
-        return t
-    end
-    return FALLBACK_RESOURCES
-end
-
--- ── List all resources ─────────────────────────────────────────────────────────
-
-local function listResources(rm)
-    local names = getResourceNames(rm)
-    log("Current resource values:")
-    for _, name in ipairs(names) do
-        -- GetResourceAmount(ResourceName, bRemoveTemporaryModifiers)
-        -- false = include temporary modifiers (current effective value)
-        local val = safeGet(function() return rm:GetResourceAmount(name, false) end)
-        local cap = safeGet(function() return rm:GetResourceCapacity(name) end)
-        if val ~= nil then
-            local line = string.format("  %-16s = %d", name, val)
-            if cap and cap > 0 then line = line .. " / " .. tostring(cap) end
-            log(line)
-        end
-    end
+local function readResource(rm, name)
+    -- GetResourceAmount(ResourceName, bRemoveTemporaryModifiers)
+    -- false = keep temporary modifiers, giving the current effective value
+    return safeGet(function() return rm:GetResourceAmount(name, false) end)
 end
 
 -- ── Console commands ───────────────────────────────────────────────────────────
--- Open the UE4SS console with ` (backtick) or ~ (tilde).
---
---   listresources              — print all resource values
---   getresource <Name>         — print one resource value
---   setresource <Name> <Value> — set a resource to a value
 
 RegisterConsoleCommandHandler("listresources", function(fullCmd, params, ar)
     local rm = findResourceManager()
-    if not rm then log("Error: resource manager not found (is a game loaded?)"); return true end
-    listResources(rm)
+    if not rm then out(ar, "Error: resource manager not found (is a game loaded?)"); return true end
+    out(ar, "Current resource values:")
+    for _, name in ipairs(RESOURCES) do
+        local val = readResource(rm, name)
+        if val ~= nil then
+            out(ar, string.format("  %-16s = %d", name, val))
+        else
+            out(ar, string.format("  %-16s = (unavailable)", name))
+        end
+    end
     return true
 end)
 
 RegisterConsoleCommandHandler("getresource", function(fullCmd, params, ar)
-    if #params < 1 then log("Usage: getresource <ResourceName>"); return true end
+    if #params < 1 then out(ar, "Usage: getresource <ResourceName>"); return true end
     local rm = findResourceManager()
-    if not rm then log("Error: resource manager not found (is a game loaded?)"); return true end
+    if not rm then out(ar, "Error: resource manager not found (is a game loaded?)"); return true end
     local name = params[1]
-    local val = safeGet(function() return rm:GetResourceAmount(name, false) end)
-    local cap = safeGet(function() return rm:GetResourceCapacity(name) end)
+    local val = readResource(rm, name)
     if val ~= nil then
-        local line = name .. " = " .. tostring(val)
-        if cap and cap > 0 then line = line .. " / " .. tostring(cap) .. " (capacity)" end
-        log(line)
+        out(ar, name .. " = " .. tostring(val))
     else
-        log("Resource '" .. name .. "' not found. Use 'listresources' to see available names.")
+        out(ar, "'" .. name .. "' not found. Try: listresources")
     end
     return true
 end)
 
 RegisterConsoleCommandHandler("setresource", function(fullCmd, params, ar)
-    if #params < 2 then log("Usage: setresource <ResourceName> <Value>"); return true end
+    if #params < 2 then out(ar, "Usage: setresource <ResourceName> <Value>"); return true end
     local name   = params[1]
     local amount = tonumber(params[2])
-    if not amount then log("Error: value must be a number (got '" .. params[2] .. "')"); return true end
+    if not amount then out(ar, "Error: value must be a number"); return true end
+    amount = math.floor(amount)
 
     local rm = findResourceManager()
-    if not rm then log("Error: resource manager not found (is a game loaded?)"); return true end
+    if not rm then out(ar, "Error: resource manager not found (is a game loaded?)"); return true end
 
-    -- SetResourceAmount is a static function: SetResourceAmount(WorldContext, FSTVResourceParameter)
-    -- FSTVResourceParameter has: ResourceName (FString), ResourceAmount (int32)
-    -- Pass rm as the WorldContext; UE4SS maps the struct from a Lua table.
-    local ok, err = pcall(function()
-        rm:SetResourceAmount({ResourceName = name, ResourceAmount = math.floor(amount)})
-    end)
-    if ok then
-        local newVal = safeGet(function() return rm:GetResourceAmount(name, false) end)
-        log(name .. " -> " .. (newVal ~= nil and tostring(newVal) or tostring(math.floor(amount))))
-    else
-        log("Error setting '" .. name .. "': " .. tostring(err))
-        log("Use 'listresources' to see available resource names.")
+    local before = readResource(rm, name)
+    if before == nil then
+        out(ar, "Warning: '" .. name .. "' returned nil — name may be wrong.")
     end
+
+    -- SetResourceAmount is a static function: (UObject* WorldContext, FSTVResourceParameter Resource)
+    -- FSTVResourceParameter fields: ResourceName (FString), ResourceAmount (int32)
+    -- rm is passed explicitly as the WorldContext (UE4SS does not auto-fill it).
+    local ok, err = pcall(function()
+        rm:SetResourceAmount(rm, {ResourceName = name, ResourceAmount = amount})
+    end)
+
+    if not ok then
+        out(ar, "SetResourceAmount error: " .. tostring(err))
+        return true
+    end
+
+    local after = readResource(rm, name)
+    if after ~= nil then
+        out(ar, name .. ": " .. tostring(before) .. " -> " .. tostring(after))
+        if after == before then
+            out(ar, "Value unchanged — struct mapping may have failed.")
+        end
+    end
+
     return true
 end)
 
