@@ -15,9 +15,17 @@ local function safeGet(fn)
     return ok and v or nil
 end
 
+-- Confirmed resource names from STVResourceSettings + data tables.
 local RESOURCES = {
-    "Food", "Deuterium", "Energy", "Morale", "MaxMorale",
-    "Happiness", "LivingSpace", "Resilience", "SciencePoints",
+    "Food", "Deuterium", "Energy", "Morale", "MoraleMax",
+    "Happiness", "LivingSpace", "Cycles", "SciencePoints",
+    "BioNeuralGelPacks", "BorgNanites",
+}
+
+-- Speculative names — shown in listresources only if the game returns a non-zero value.
+local RESOURCES_SPECULATIVE = {
+    "Nanites", "Nanoprobes", "BorgNanoprobes",
+    "Assimilated", "HullIntegrity", "Resilience", "MaxMorale",
 }
 
 -- ── Finders ───────────────────────────────────────────────────────────────────
@@ -68,10 +76,25 @@ RegisterConsoleCommandHandler("listresources", function(fullCmd, params, ar)
     for _, name in ipairs(RESOURCES) do
         local val = readResource(rm, name)
         if val ~= nil then
-            out(ar, string.format("  %-16s = %d", name, val))
+            out(ar, string.format("  %-20s = %d", name, val))
         else
-            out(ar, string.format("  %-16s = (unavailable)", name))
+            out(ar, string.format("  %-20s = (unavailable)", name))
         end
+    end
+    for _, name in ipairs(RESOURCES_SPECULATIVE) do
+        local val = readResource(rm, name)
+        if val ~= nil and val ~= 0 then
+            out(ar, string.format("  %-20s = %d  (*discovered)", name, val))
+        end
+    end
+    local cm = findConstructionManager()
+    if cm then
+        local hull     = safeGet(function() return cm.HullIntegrity end)
+        local maxHull  = safeGet(function() return cm:GetMaxHullIntegrity() end)
+        local warp     = safeGet(function() return cm:GetWarpCoreIntegrity() end)
+        local maxWarp  = safeGet(function() return cm:GetMaxWarpCoreIntegrity() end)
+        if hull    then out(ar, string.format("  %-20s = %.1f / %.1f  (use: repairhull / sethull)", "HullIntegrity", hull, maxHull or 0)) end
+        if warp    then out(ar, string.format("  %-20s = %.1f / %.1f  (use: repairwarpcore / setwarpcore)", "WarpCoreIntegrity", warp, maxWarp or 0)) end
     end
     return true
 end)
@@ -199,4 +222,21 @@ RegisterConsoleCommandHandler("setwarpcore", function(fullCmd, params, ar)
     return true
 end)
 
-log("v1.1 loaded — commands: listresources | getresource | setresource | addresource | removeresource | addallresources | repairhull | sethull | repairwarpcore | setwarpcore")
+RegisterConsoleCommandHandler("rehelp", function(fullCmd, params, ar)
+    out(ar, "ResourceEditor commands:")
+    out(ar, "  listresources                     — show all current values")
+    out(ar, "  getresource <Name>                — show one resource value")
+    out(ar, "  setresource <Name> <Value>        — set resource to exact value")
+    out(ar, "  addresource <Name> <Amount>       — add to current value")
+    out(ar, "  removeresource <Name> <Amount>    — subtract from current value")
+    out(ar, "  addallresources <Amount>          — add to all resources")
+    out(ar, "  repairhull                        — restore hull to max")
+    out(ar, "  sethull <0.0-1.0>                 — set hull as ratio of max")
+    out(ar, "  repairwarpcore                    — restore warp core to max")
+    out(ar, "  setwarpcore <0.0-1.0>             — set warp core as ratio of max")
+    out(ar, "  rehelp                            — show this help")
+    out(ar, "Resource names: " .. table.concat(RESOURCES, ", "))
+    return true
+end)
+
+log("v1.1 loaded — type 'rehelp' for a list of commands")

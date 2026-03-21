@@ -28,3 +28,51 @@ jobs:
           name: ResourceEditor ${{ steps.ver.outputs.version }}
           files: ResourceEditor-${{ steps.ver.outputs.version }}.zip
           make_latest: true
+
+      # ── Nexus Mods upload ────────────────────────────────────────────────────
+      # Requires NEXUS_API_KEY secret and NEXUS_GAME_DOMAIN / NEXUS_MOD_ID vars.
+      # Uses the official Nexus-Mods/upload-action which handles the full
+      # upload session → S3 → finalise → publish flow.
+
+      - name: Read README for description
+        id: readme
+        run: |
+          {
+            echo "content<<EOF"
+            cat README.md
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Get Nexus mod UUID
+        id: nexus_mod
+        env:
+          NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
+        run: |
+          RESPONSE=$(curl -s "https://api.nexusmods.com/v3/games/${{ vars.NEXUS_GAME_DOMAIN }}/mods/${{ vars.NEXUS_MOD_ID }}" \
+            -H "apikey: $NEXUS_API_KEY")
+          echo "Response: $RESPONSE"
+          MOD_ID=$(echo "$RESPONSE" | jq -r '.id')
+          echo "mod_id=$MOD_ID" >> $GITHUB_OUTPUT
+
+      - name: Get Nexus file update group
+        id: nexus_group
+        env:
+          NEXUS_API_KEY: ${{ secrets.NEXUS_API_KEY }}
+        run: |
+          MOD_ID="${{ steps.nexus_mod.outputs.mod_id }}"
+          RESPONSE=$(curl -s "https://api.nexusmods.com/v3/mods/$MOD_ID/file-update-groups" \
+            -H "apikey: $NEXUS_API_KEY")
+          echo "Response: $RESPONSE"
+          GROUP_ID=$(echo "$RESPONSE" | jq -r 'if type == "array" and length > 0 then .[0].id else "" end')
+          echo "group_id=$GROUP_ID" >> $GITHUB_OUTPUT
+
+      - name: Upload to Nexus Mods
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.2
+        with:
+          api_key: ${{ secrets.NEXUS_API_KEY }}
+          file_group_id: ${{ steps.nexus_group.outputs.group_id }}
+          filename: ResourceEditor-${{ steps.ver.outputs.version }}.zip
+          version: ${{ steps.ver.outputs.version }}
+          display_name: ResourceEditor ${{ steps.ver.outputs.version }}
+          description: ${{ steps.readme.outputs.content }}
+          file_category: main
